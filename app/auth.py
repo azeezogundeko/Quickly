@@ -127,6 +127,18 @@ def decode_token(token: str) -> dict:
 _bearer_scheme = HTTPBearer(auto_error=False)
 
 
+def _check_api_key_scope(request: Request, ak) -> None:
+    """Reject a scoped API key outside its allowed endpoints (403)."""
+    from app.api_key_scopes import key_allows
+
+    if not key_allows(ak.scopes, request.method, request.url.path):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="API key scope does not permit this endpoint",
+        )
+    request.state.api_key = ak
+
+
 async def resolve_current_user(
     request: Request,
     db: AsyncSession,
@@ -150,6 +162,7 @@ async def resolve_current_user(
         ak = result.scalar_one_or_none()
         if ak is None:
             raise HTTPException(status_code=401, detail="Invalid API key")
+        _check_api_key_scope(request, ak)
         ak.last_used_at = utcnow()
         await db.flush()
         user = await db.get(User, ak.user_id)
@@ -174,6 +187,7 @@ async def resolve_current_user(
         ak = result.scalar_one_or_none()
         if ak is None:
             raise HTTPException(status_code=401, detail="Invalid API key")
+        _check_api_key_scope(request, ak)
         ak.last_used_at = utcnow()
         await db.flush()
         user = await db.get(User, ak.user_id)

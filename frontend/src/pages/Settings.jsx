@@ -60,6 +60,7 @@ export default function Settings() {
   const [apiKeys, setApiKeys] = useState([]);
   const [newKeyName, setNewKeyName] = useState('');
   const [newKeyExpiry, setNewKeyExpiry] = useState('');
+  const [newKeyMcpOnly, setNewKeyMcpOnly] = useState(false);
   const [createdKey, setCreatedKey] = useState(null); // shown once after creation
 
   // MCP (Cursor / AI agents)
@@ -494,9 +495,10 @@ export default function Settings() {
       const res = await api.post('/auth/api-keys', {
         name: newKeyName,
         ...(newKeyExpiry ? { expires_in_days: parseInt(newKeyExpiry, 10) } : {}),
+        ...(newKeyMcpOnly ? { scopes: ['mcp:leads'] } : {}),
       });
       setCreatedKey(res.key);
-      setNewKeyName(''); setNewKeyExpiry('');
+      setNewKeyName(''); setNewKeyExpiry(''); setNewKeyMcpOnly(false);
       const keysData = await api.get('/auth/api-keys');
       setApiKeys(keysData || []);
     } catch (e) { notify({ type: 'error', message: e.message }); }
@@ -1791,6 +1793,14 @@ export default function Settings() {
               </div>
               <Button size="sm" onClick={createApiKey} disabled={!newKeyName.trim()}>Create</Button>
             </div>
+            <label className="mt-3 flex items-center gap-2 text-xs text-gray-500">
+              <input
+                type="checkbox"
+                checked={newKeyMcpOnly}
+                onChange={e => setNewKeyMcpOnly(e.target.checked)}
+              />
+              MCP leads only — key can use /api/mcp and lead endpoints, nothing else (recommended for AI agents)
+            </label>
           </Card>
 
           {/* Existing keys */}
@@ -1804,6 +1814,9 @@ export default function Settings() {
                   <div>
                     <span className="text-sm font-medium">{k.name}</span>
                     <span className="ml-2 text-xs text-gray-400">{k.prefix}•••</span>
+                    {k.scopes?.length > 0 && (
+                      <span className="ml-2 text-xs text-teal-600">{k.scopes.join(', ')}</span>
+                    )}
                     <span className="ml-2 text-xs text-gray-400">
                       Created {new Date(k.created_at).toLocaleDateString()}
                       {k.expires_at && <> · Expires {new Date(k.expires_at).toLocaleDateString()}</>}

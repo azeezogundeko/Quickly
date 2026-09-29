@@ -122,6 +122,18 @@ class CreateAPIKeyRequest(BaseModel):
     scopes: list[str] = []
     expires_in_days: int | None = None  # None = no expiry
 
+    @field_validator("scopes")
+    @classmethod
+    def scopes_known(cls, v: list[str]) -> list[str]:
+        from app.api_key_scopes import KNOWN_SCOPES, unknown_scopes
+
+        bad = unknown_scopes(v)
+        if bad:
+            raise ValueError(
+                f"Unknown scope(s): {', '.join(bad)}; allowed: {', '.join(sorted(KNOWN_SCOPES))}"
+            )
+        return sorted(set(v))
+
 
 class APIKeyResponse(BaseModel):
     id: int
