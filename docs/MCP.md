@@ -28,6 +28,10 @@ Quickly exposes a **remote MCP server** over **Streamable HTTP** so AI clients (
 
 MCP requests are checked before the MCP session runs. Tool calls that proxy to `/api/leads` and `/api/campaigns/...` reuse the credentials from the **incoming MCP HTTP request**, so each user/session only accesses their own data.
 
+### Scoped keys for agents
+
+A key created with the scope `mcp:leads` (Settings → API Keys → "MCP leads only", or `"scopes": ["mcp:leads"]` on `POST /api/auth/api-keys`) can only call `/api/mcp` and the lead endpoints the tools below use. Every other endpoint returns **403**, including inbox and campaign settings and `/api/auth/*`. An agent holding the key can add leads, but it cannot raise sending limits or create more keys. Keys with no scopes keep their owner's full access.
+
 ---
 
 ## Tools
@@ -38,7 +42,9 @@ MCP requests are checked before the MCP session runs. Tool calls that proxy to `
 | `get_lead` | `GET /api/leads/{id}` |
 | `update_lead` | `PATCH /api/leads/{id}` (`name`, `enrollment_status`, `custom_data`) |
 | `delete_lead` | `DELETE /api/leads/{id}` |
-| `add_campaign_leads` | `POST /api/campaigns/{campaign_id}/leads` (bulk add / enroll) |
+| `add_campaign_leads` | `POST /api/campaigns/{campaign_id}/leads` (bulk add / enroll). `verify_emails` defaults to **false**; pass `true` to verify before sending |
+| `get_reply_thread` | `GET /api/leads/{id}/reply-thread` (optional `campaign_id`) — the lead's email thread(s) with plain-text bodies and `direction` (`sent`/`received`). Returns `threads: []` plus a `note` if the reply can't be linked to a sent thread |
+| `set_lead_interest` | `PATCH /api/campaigns/{campaign_id}/leads/{lead_id}` with `interest` (`interested`, `not_interested`, `out_of_office`, `auto_reply`, `""` to clear) and/or `status` (e.g. `unsubscribed`, `wrong_person`). Fires the same `lead.*` webhooks as the AI classifier, plus `lead.status_changed` |
 
 Standalone lead creation is not exposed as a separate MCP tool; use `add_campaign_leads` (same rules as the REST API).
 

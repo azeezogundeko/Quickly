@@ -1034,3 +1034,74 @@ async def get_lead_replies(lead_id: int, db: AsyncSession = Depends(get_db)):
         }
         for lr, name in result.all()
     ]
+
+
+_REPLY_BODY_MAX_CHARS = 8000
+
+
+@router.get("/{lead_id}/reply-thread")
+async def get_lead_reply_thread(
+    lead_id: int,
+    campaign_id: int | None = Query(None, ge=1),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reply thread(s) for a lead, with plain-text bodies, for external reply triage.
+
+    Threads are found through the sent ``EmailLog.thread_id``; ``LeadReply`` does not
+    record which thread a reply arrived on.
+    """
+    from sqlalchemy import desc, func
+
+    from app.unibox import get_thread_messages, hydrate_thread_on_demand
+
+    reply_q = select(LeadReply.id).where(LeadReply.lead_id == lead_id)
+    if campaign_id is not None:
+        reply_q = reply_q.where(LeadReply.campaign_id == campaign_id)
+    if (await db.execute(reply_q.limit(1))).scalar_one_or_none() is None:
+        raise HTTPException(404, "No reply recorded for this lead")
+
+    last_sent = func.max(EmailLog.sent_at)
+    threads_q = (
+        select(EmailLog.thread_id, EmailLog.inbox_id, last_sent)
+        .where(
+            EmailLog.lead_id == lead_id,
+            EmailLog.thread_id.isnot(None),
+            EmailLog.inbox_id.isnot(None),
+        )
+        .group_by(EmailLog.thread_id, EmailLog.inbox_id)
+        .order_by(desc(last_sent))
+    )
+    if campaign_id is not None:
+        threads_q = threads_q.where(EmailLog.campaign_id == campaign_id)
+
+    threads = []
+    for thread_id, inbox_id, _ in (await db.execute(threads_q)).all():
+        try:
+            if await hydrate_thread_on_demand(db, thread_id=thread_id, inbox_id=inbox_id):
+                await db.commit()
+        except Exception:
+            log.exception("reply-thread: hydration failed lead_id=%s thread_id=%s", lead_id, thread_id)
+        payload = await get_thread_messages(db, thread_id=thread_id, inbox_id=inbox_id)
+        if payload is None:
+            continue
+        threads.append(
+            {
+                "thread_id": payload["thread_id"],
+                "inbox_id": payload["inbox_id"],
+                "subject": payload.get("subject"),
+                "messages": [
+                    {
+                        "direction": m.get("direction"),
+                        "from": m.get("from"),
+                        "timestamp": m.get("timestamp"),
+                        "body_plain": (m.get("body_plain") or m.get("snippet") or "")[:_REPLY_BODY_MAX_CHARS],
+                    }
+                    for m in payload.get("messages", [])
+                ],
+            }
+        )
+
+    result: dict = {"lead_id": lead_id, "threads": threads}
+    if not threads:
+        result["note"] = "reply not linked to a sent thread; check Unibox"
+    return result

@@ -169,6 +169,47 @@ async def add_campaign_leads(
     return _json_response(r)
 
 
+@leads_mcp.tool()
+async def get_reply_thread(ctx: Context, lead_id: int, campaign_id: int | None = None) -> str:
+    """Read a replied lead's email thread(s) with plain-text bodies (direction sent/received), newest thread first."""
+    headers = _outbound_headers(ctx)
+    params: dict[str, str] = {}
+    if campaign_id is not None:
+        params["campaign_id"] = str(campaign_id)
+    url = f"{_api_base()}/api/leads/{lead_id}/reply-thread"
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        r = await client.get(url, headers=headers, params=params)
+    return _json_response(r)
+
+
+@leads_mcp.tool()
+async def set_lead_interest(
+    ctx: Context,
+    campaign_id: int,
+    lead_id: int,
+    interest: str | None = None,
+    status: str | None = None,
+) -> str:
+    """Set a lead's reply classification in one campaign.
+
+    interest: interested | not_interested | out_of_office | auto_reply ("" clears it).
+    status: enrollment status, e.g. unsubscribed | wrong_person.
+    not_interested, out_of_office and terminal statuses stop further sends; lead.* webhooks fire.
+    """
+    headers = _outbound_headers(ctx)
+    body: dict[str, Any] = {}
+    if interest is not None:
+        body["interest"] = interest
+    if status is not None:
+        body["status"] = status
+    if not body:
+        return json.dumps({"error": "Provide at least one of: interest, status"})
+    url = f"{_api_base()}/api/campaigns/{campaign_id}/leads/{lead_id}"
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        r = await client.patch(url, headers={**headers, "Content-Type": "application/json"}, json=body)
+    return _json_response(r)
+
+
 class _MCPAuthASGI:
     """Require the same auth as the REST API before handling MCP Streamable HTTP."""
 

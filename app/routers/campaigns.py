@@ -1152,6 +1152,9 @@ async def patch_campaign_lead(
     if not cl:
         raise HTTPException(404, "Campaign-lead enrolment not found")
 
+    from app.enrollment_changes import UNSET, apply_enrollment_change, fire_enrollment_events
+
+    new_status = UNSET
     if payload.status is not None:
         st = (payload.status or "").strip().lower()
         if st not in ENROLLMENT_STATUSES:
@@ -1159,12 +1162,13 @@ async def patch_campaign_lead(
                 400,
                 f"status must be one of: {', '.join(sorted(ENROLLMENT_STATUSES))}",
             )
-        cl.enrollment_status = st
+        new_status = st
 
+    new_interest = UNSET
     if payload.interest is not None:
         raw = payload.interest
         if isinstance(raw, str) and raw.strip() == "":
-            cl.interest_status = None
+            new_interest = None
         else:
             norm = normalize_interest(str(raw) if raw is not None else "")
             if norm is None and raw not in (None, "", "null"):
@@ -1172,7 +1176,9 @@ async def patch_campaign_lead(
                     400,
                     f"interest must be one of: {', '.join(sorted(LEAD_INTERESTS))} or empty to clear",
                 )
-            cl.interest_status = norm
+            new_interest = norm
+
+    events = await apply_enrollment_change(db, cl, status=new_status, interest=new_interest)
 
     if payload.sending_paused is not None:
         cl.sending_paused = payload.sending_paused
@@ -1180,6 +1186,9 @@ async def patch_campaign_lead(
     await db.flush()
     # Full global recalculation: schedule must mirror what the send job will deliver.
     await db.commit()
+    if events:
+        await fire_enrollment_events(db, events)
+        await db.commit()
     from app.routers.schedule import enqueue_global_recalculate
 
     enqueue_global_recalculate(background_tasks)
