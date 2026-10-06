@@ -1,7 +1,8 @@
 # Quickly on Dokploy (Vonative fork).
 #
-# - Postgres is a separate Dokploy-managed database service (so Dokploy backups cover it);
-#   set DATABASE_URL to its *internal* URL with the scheme changed to postgresql+asyncpg://
+# - Postgres is bundled as service `quickly-db` on a private network; the app builds its own
+#   DATABASE_URL from POSTGRES_PASSWORD. Data lives in the `pgdata` volume. Dokploy's database
+#   backups do NOT cover it: use Settings → Backup in the app (dumps land in the `backups` volume).
 # - No Caddy: Dokploy's Traefik terminates TLS. In Domains, map your host to service `app`,
 #   port 8000, HTTPS on (Let's Encrypt).
 # - Dokploy builds the app from this repo at the deployed commit. To pin a prebuilt image
@@ -10,13 +11,33 @@
 #   replicas could send the same queue slot twice.
 #
 # Set these in Dokploy → Environment (never commit real values):
-#   DATABASE_URL, BASE_URL, QUICKLY_SECRET_KEY, QUICKLY_ENCRYPTION_KEY,
+#   POSTGRES_PASSWORD, BASE_URL, QUICKLY_SECRET_KEY, QUICKLY_ENCRYPTION_KEY,
 #   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
 # Optional: OFFICE365_CLIENT_ID, OFFICE365_CLIENT_SECRET, OFFICE365_TENANT_ID, CORS_ORIGINS
+#
+# POSTGRES_PASSWORD goes into a URL, so keep it to letters and digits. Postgres only reads it
+# on first start with an empty `pgdata` volume; changing it later does not change the database.
 #
 # Local stacks with bundled Postgres/Caddy: docker-compose.no-caddy.yml, docker-compose-not-host.yml.
 
 services:
+  quickly-db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: quickly
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD (letters and digits only)}
+      POSTGRES_DB: quickly
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quickly -d quickly"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - internal
+
   app:
     build:
       context: .
@@ -24,8 +45,11 @@ services:
     restart: unless-stopped
     expose:
       - "8000"
+    depends_on:
+      quickly-db:
+        condition: service_healthy
     environment:
-      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL (Dokploy Postgres internal URL, postgresql+asyncpg://)}
+      DATABASE_URL: postgresql+asyncpg://quickly:${POSTGRES_PASSWORD}@quickly-db:5432/quickly
       BASE_URL: ${BASE_URL:?set BASE_URL, e.g. https://outreach.example.com}
       QUICKLY_SECRET_KEY: ${QUICKLY_SECRET_KEY:?set QUICKLY_SECRET_KEY}
       QUICKLY_ENCRYPTION_KEY: ${QUICKLY_ENCRYPTION_KEY:?set QUICKLY_ENCRYPTION_KEY}
@@ -37,16 +61,19 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-}
       QUICKLY_PREBUILT_IMAGE: "1"
       QUICKLY_MODE: production
-      # Settings → Backup can also write dumps here (Dokploy's Postgres backups are the primary copy)
+      # Settings → Backup writes database dumps here
       QUICKLY_LOCAL_DISK_BACKUPS: "1"
     volumes:
       - backups:/app/backups
     networks:
+      - internal
       - dokploy-network
 
 volumes:
+  pgdata:
   backups:
 
 networks:
+  internal:
   dokploy-network:
     external: true
