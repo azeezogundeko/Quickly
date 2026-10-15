@@ -683,6 +683,42 @@ async def list_sequences(campaign_id: int, db: AsyncSession = Depends(get_db)):
     return result.scalars().all()
 
 
+# Business days to wait before each step when the caller doesn't say: first email
+# goes immediately, follow-up 1 after 3 sending days, follow-up 2+ after 4 more.
+DEFAULT_FOLLOWUP_WAITS = [0, 3, 4]
+
+# Starter sequence whose content comes from per-lead custom_data (e.g. a CSV with
+# subject, body, followup_1_body, followup_2_body columns). Follow-ups have no
+# subject, so they go as replies in the same thread.
+DEFAULT_SEQUENCE_STEPS = [
+    {"subject": "{{subject}}", "body": "{{body}}"},
+    {"subject": None, "body": "{{followup_1_body}}"},
+    {"subject": None, "body": "{{followup_2_body}}"},
+]
+
+
+def default_wait_days(position: int) -> int:
+    if position <= 0:
+        return 0
+    return DEFAULT_FOLLOWUP_WAITS[min(position, len(DEFAULT_FOLLOWUP_WAITS) - 1)]
+
+
+async def _after_sequences_created(
+    db: AsyncSession, campaign_id: int, background_tasks: BackgroundTasks, personalized: bool
+) -> None:
+    # If a personalized sequence was added, reconcile existing leads' statuses
+    if personalized:
+        await reconcile_personalized_status(db, campaign_id, background_tasks)
+    # Recalculate queue so already-enrolled leads get slots for the new sequence
+    cl_res = await db.execute(select(CampaignLead.id).where(CampaignLead.campaign_id == campaign_id))
+    cl_ids = [r[0] for r in cl_res.all()]
+    if cl_ids:
+        await db.commit()
+        from app.routers.schedule import enqueue_global_recalculate
+
+        enqueue_global_recalculate(background_tasks)
+
+
 @router.post("/{campaign_id}/sequences", response_model=SequenceResponse)
 async def create_sequence(
     campaign_id: int,
@@ -694,12 +730,15 @@ async def create_sequence(
     result = await db.execute(select(Campaign).where(Campaign.id == campaign_id))
     if not result.scalar_one_or_none():
         raise HTTPException(404, "Campaign not found")
+    wait_days = data.wait_days_after_previous
+    if wait_days is None:
+        wait_days = default_wait_days(data.position)
     seq = Sequence(
         campaign_id=campaign_id,
         position=data.position,
         subject=data.subject,
         body=data.body,
-        wait_days_after_previous=data.wait_days_after_previous,
+        wait_days_after_previous=wait_days,
         is_html=data.is_html,
         preview_text=data.preview_text,
         sequence_type=getattr(data, "sequence_type", "standard"),
@@ -709,23 +748,54 @@ async def create_sequence(
     db.add(seq)
     await db.flush()
     log.info("create_sequence: campaign=%s position=%s type=%s id=%s", campaign_id, data.position, seq.sequence_type, seq.id)
-    # If this is a personalized sequence, reconcile existing leads' statuses
-    if getattr(seq, "sequence_type", "standard") == "personalized":
-        await reconcile_personalized_status(db, campaign_id, background_tasks)
-    # Recalculate queue so already-enrolled leads get slots for the new sequence
-    cl_res = await db.execute(select(CampaignLead.id).where(CampaignLead.campaign_id == campaign_id))
-    cl_ids = [r[0] for r in cl_res.all()]
-    if cl_ids:
-        await db.commit()
-        from app.routers.schedule import enqueue_global_recalculate
-
-        enqueue_global_recalculate(background_tasks)
+    await _after_sequences_created(
+        db, campaign_id, background_tasks, getattr(seq, "sequence_type", "standard") == "personalized"
+    )
     # Re-query with variants eagerly loaded
     result2 = await db.execute(
         select(Sequence).options(selectinload(Sequence.variants)).where(Sequence.id == seq.id)
     )
     await db.commit()
     return result2.scalar_one()
+
+
+@router.post("/{campaign_id}/sequences/default", response_model=List[SequenceResponse])
+async def create_default_sequences(
+    campaign_id: int,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    """Create the 3-step starter sequence (email + 2 follow-ups) on an empty campaign."""
+    result = await db.execute(select(Campaign).where(Campaign.id == campaign_id))
+    if not result.scalar_one_or_none():
+        raise HTTPException(404, "Campaign not found")
+    existing = await db.execute(select(func.count(Sequence.id)).where(Sequence.campaign_id == campaign_id))
+    if existing.scalar_one():
+        raise HTTPException(409, "Campaign already has sequences")
+    seqs = []
+    for position, step in enumerate(DEFAULT_SEQUENCE_STEPS):
+        seq = Sequence(
+            campaign_id=campaign_id,
+            position=position,
+            subject=step["subject"],
+            body=step["body"],
+            wait_days_after_previous=default_wait_days(position),
+            is_html=False,
+            sequence_type="standard",
+        )
+        db.add(seq)
+        seqs.append(seq)
+    await db.flush()
+    log.info("create_default_sequences: campaign=%s ids=%s", campaign_id, [s.id for s in seqs])
+    await _after_sequences_created(db, campaign_id, background_tasks, personalized=False)
+    result2 = await db.execute(
+        select(Sequence)
+        .options(selectinload(Sequence.variants))
+        .where(Sequence.campaign_id == campaign_id)
+        .order_by(Sequence.position)
+    )
+    await db.commit()
+    return result2.scalars().all()
 
 
 @router.patch("/{campaign_id}/sequences/{sequence_id}", response_model=SequenceResponse)

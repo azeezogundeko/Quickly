@@ -85,7 +85,8 @@ export const sequenceFields: INodeProperties[] = [
     displayName: 'Wait Days After Previous',
     name: 'wait_days_after_previous',
     type: 'number',
-    default: 0,
+    default: 3,
+    description: 'Sending days to wait after the previous step (ignored for the first step)',
     required: true,
     typeOptions: { minValue: 0 },
     displayOptions: {

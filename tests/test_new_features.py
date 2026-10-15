@@ -671,6 +671,55 @@ async def test_create_and_list_sequences(session):
 
 
 @pytest.mark.asyncio
+async def test_sequence_wait_days_default_by_position(session):
+    """Omitted wait days default to 0 / 3 / 4; an explicit 0 is kept."""
+    campaign = await make_campaign(session)
+    await session.flush()
+
+    from app.routers.campaigns import create_sequence
+    from app.schemas import SequenceCreate
+
+    waits = []
+    for pos in range(4):
+        seq = await create_sequence(
+            campaign.id,
+            SequenceCreate(position=pos, subject=None, body="b"),
+            background_tasks=BackgroundTasks(),
+            db=session,
+        )
+        waits.append(seq.wait_days_after_previous)
+    assert waits == [0, 3, 4, 4]
+
+    explicit = await create_sequence(
+        campaign.id,
+        SequenceCreate(position=4, body="b", wait_days_after_previous=0),
+        background_tasks=BackgroundTasks(),
+        db=session,
+    )
+    assert explicit.wait_days_after_previous == 0
+
+
+@pytest.mark.asyncio
+async def test_create_default_sequences(session):
+    """Starter sequence: email + 2 same-thread follow-ups using lead variables; 409 if steps exist."""
+    from fastapi import HTTPException
+    from app.routers.campaigns import create_default_sequences
+
+    campaign = await make_campaign(session)
+    await session.flush()
+
+    seqs = await create_default_sequences(campaign.id, background_tasks=BackgroundTasks(), db=session)
+    assert [s.position for s in seqs] == [0, 1, 2]
+    assert [s.wait_days_after_previous for s in seqs] == [0, 3, 4]
+    assert [s.subject for s in seqs] == ["{{subject}}", None, None]
+    assert [s.body for s in seqs] == ["{{body}}", "{{followup_1_body}}", "{{followup_2_body}}"]
+
+    with pytest.raises(HTTPException) as exc:
+        await create_default_sequences(campaign.id, background_tasks=BackgroundTasks(), db=session)
+    assert exc.value.status_code == 409
+
+
+@pytest.mark.asyncio
 async def test_bulk_add_creates_lead_if_not_exists(session):
     """bulk_add_leads should create a Lead record if one doesn't exist yet."""
     campaign = await make_campaign(session)

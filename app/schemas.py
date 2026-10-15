@@ -232,7 +232,7 @@ class SequenceCreate(BaseModel):
     position: int
     subject: Optional[str] = None
     body: str
-    wait_days_after_previous: int = 0
+    wait_days_after_previous: Optional[int] = None  # None = default for this position (0, 3, 4…)
     is_html: Optional[bool] = None  # None = auto-detect (legacy), True = HTML, False = plain
     preview_text: Optional[str] = None
     sequence_type: str = "standard"  # standard | personalized

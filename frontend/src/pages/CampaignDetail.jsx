@@ -2807,12 +2807,18 @@ function CustomEmailEditorModal({ target, campaignId, onClose, onSaved }) {
   );
 }
 
+// Default business-day wait before each step (matches the backend): first email
+// immediately, follow-up 1 after 3 sending days, follow-ups 2+ after 4 more.
+const DEFAULT_FOLLOWUP_WAITS = [0, 3, 4];
+const defaultWaitDays = (position) =>
+  position <= 0 ? 0 : DEFAULT_FOLLOWUP_WAITS[Math.min(position, DEFAULT_FOLLOWUP_WAITS.length - 1)];
+
 function SequencesTab({ sequences, campaignId, campaign, leads, refresh }) {
   const notify      = useNotify();
   const confirm     = useConfirm();
   const loadingCtrl = useLoading();
   const [pos, setPos] = useState(sequences.length);
-  const [form, setForm] = useState({ subject: '', body: '', wait_days_after_previous: 0, is_html: false, preview_text: '', sequence_type: 'standard', fallback_subject: '', fallback_body: '' });
+  const [form, setForm] = useState({ subject: '', body: '', wait_days_after_previous: defaultWaitDays(sequences.length), is_html: false, preview_text: '', sequence_type: 'standard', fallback_subject: '', fallback_body: '' });
   const [msg,  setMsg]  = useState(null);
   const [editing,         setEditing]         = useState(null);
   const [originalEditing, setOriginalEditing] = useState(null);
@@ -2829,6 +2835,7 @@ function SequencesTab({ sequences, campaignId, campaign, leads, refresh }) {
   const [variantForm, setVariantForm] = useState({ label: '', subject: '', body: '', is_html: false, preview_text: '' });
 
   useEffect(() => { setPos(sequences.length); }, [sequences]);
+  useEffect(() => { setForm(f => ({ ...f, wait_days_after_previous: defaultWaitDays(pos) })); }, [pos]);
   useEffect(() => {
     if (sequences.length > 0 && selectedIdx === null) setSelectedIdx(0);
     if (sequences.length === 0) { setSelectedIdx(null); setShowAddForm(true); }
@@ -2867,8 +2874,19 @@ function SequencesTab({ sequences, campaignId, campaign, leads, refresh }) {
     e.preventDefault();
     try {
       await api.post(`/campaigns/${campaignId}/sequences`, { ...form, position: pos });
-      setForm({ subject: '', body: '', wait_days_after_previous: 0, is_html: false, preview_text: '', sequence_type: 'standard', fallback_subject: '', fallback_body: '' });
+      setForm({ subject: '', body: '', wait_days_after_previous: defaultWaitDays(pos + 1), is_html: false, preview_text: '', sequence_type: 'standard', fallback_subject: '', fallback_body: '' });
       setMsg({ type: 'success', text: 'Sequence added' });
+      setShowAddForm(false);
+      refresh();
+    } catch (e) {
+      setMsg({ type: 'error', text: e.message });
+    }
+  };
+
+  const addDefaultSequence = async () => {
+    try {
+      await api.post(`/campaigns/${campaignId}/sequences/default`);
+      setMsg({ type: 'success', text: 'Default 3-step sequence added' });
       setShowAddForm(false);
       refresh();
     } catch (e) {
@@ -2961,7 +2979,17 @@ function SequencesTab({ sequences, campaignId, campaign, leads, refresh }) {
         </div>
         <div className="flex-1 overflow-y-auto px-3 py-3">
           {sequences.length === 0 && (
-            <p className="text-xs text-gray-400 text-center py-4">No steps yet. Add one to get started.</p>
+            <div className="text-center py-4">
+              <p className="text-xs text-gray-400">No steps yet. Add one to get started.</p>
+              <button
+                type="button"
+                onClick={addDefaultSequence}
+                className="mt-3 text-xs font-medium text-teal-600 hover:text-teal-700 underline"
+                title="Email + 2 follow-ups (wait 3 then 4 sending days) using {{subject}}, {{body}}, {{followup_1_body}}, {{followup_2_body}} from lead fields"
+              >
+                Use default 3-step sequence
+              </button>
+            </div>
           )}
           <div className="relative">
             {sequences.map((s, idx) => {
